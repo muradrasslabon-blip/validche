@@ -10,16 +10,12 @@ from collections import defaultdict
 from telegram import Update, Document, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# Импортируем всё необходимое из checker.py
 from checker import (
     load_proxies,
     build_session,
     check_session,
     log,
-    PROXY_FILE,        # <--- добавили
-    THREADS,
-    TIMEOUT,
-    RETRY_COUNT,
+    PROXY_FILE
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -35,6 +31,9 @@ fh = logging.FileHandler("bot.log", encoding="utf-8")
 fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 bot_logger.addHandler(fh)
 
+# Допустимые расширения для файлов с куками
+ALLOWED_EXTENSIONS = {'.json', '.txt', '.cookie', '.cookies', '.dat'}
+
 def check_one_account(cookies: list, proxy_dict: dict = None) -> dict:
     try:
         session = build_session(cookies, proxy_dict)
@@ -46,7 +45,7 @@ def check_one_account(cookies: list, proxy_dict: dict = None) -> dict:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я помогу проверить аккаунты Kleinanzeigen на валидность.\n\n"
-        "📤 Отправь мне файлы с куками (JSON) или ZIP-архив с ними.\n"
+        "📤 Отправь мне файлы с куками (JSON, TXT, COOKIE, DAT) или ZIP-архив с ними.\n"
         "После загрузки всех файлов напиши команду /done, чтобы начать проверку.\n\n"
         "Команды:\n"
         "/start — показать это сообщение\n"
@@ -64,6 +63,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     filename = doc.file_name
+    # Обработка ZIP
     if filename.lower().endswith(".zip"):
         await update.message.reply_text("📦 Обрабатываю ZIP-архив...")
         try:
@@ -72,7 +72,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
                 count = 0
                 for item in zf.namelist():
-                    if item.endswith(".json"):
+                    if any(item.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
                         with zf.open(item) as f:
                             data = json.load(f)
                             if isinstance(data, list):
@@ -83,8 +83,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Ошибка обработки ZIP: {e}")
         return
 
-    if not filename.lower().endswith(".json"):
-        await update.message.reply_text("❌ Пожалуйста, отправь JSON-файл или ZIP-архив.")
+    # Проверка расширения
+    if not any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        await update.message.reply_text(
+            f"❌ Поддерживаются только файлы с расширениями: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
         return
 
     try:
@@ -96,7 +99,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not isinstance(data, list):
-        await update.message.reply_text("❌ JSON должен содержать массив кук.")
+        await update.message.reply_text("❌ Файл должен содержать массив кук (список объектов).")
         return
 
     user_files[user_id].append((filename, data))
@@ -110,7 +113,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"⏳ Начинаю проверку {len(user_files[user_id])} аккаунтов...")
 
-    proxies = load_proxies(PROXY_FILE)   # теперь PROXY_FILE определён
+    proxies = load_proxies(PROXY_FILE)
     if not proxies:
         await update.message.reply_text("❌ Нет прокси для проверки. Обратитесь к администратору.")
         return
